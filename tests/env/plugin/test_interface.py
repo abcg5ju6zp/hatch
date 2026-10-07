@@ -4529,3 +4529,141 @@ skip-install = false
         deps = [dep for dep in environment.dependencies_complex if dep.name == "dep3"]
         assert len(deps) == 1
         assert deps[0].url == "git+https://example.com/dep3@abc"
+
+
+class PreparedEnvironment(MockEnvironment):  # no cov
+    def __init__(self, *args, fail_at=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.existing = False
+        self.removed = False
+        self.recovered = False
+        self.created = False
+        self.synced = False
+        self.fail_at = fail_at
+
+    def exists(self):
+        return self.existing
+
+    def remove(self):
+        self.removed = True
+        self.existing = False
+
+    def create(self):
+        self.created = True
+        self.existing = True
+        if self.fail_at == "create":
+            message = "creation failed"
+            raise RuntimeError(message)
+
+    def recover_incomplete(self):
+        self.recovered = True
+
+    def dependency_hash(self):
+        return "hash"
+
+    def dependencies_in_sync(self):
+        if self.fail_at == "sync":
+            message = "sync failed"
+            raise RuntimeError(message)
+
+        return False
+
+    def sync_dependencies(self):
+        self.synced = True
+
+
+def _get_prepared_environment(temp_dir, platform, app, **kwargs):
+    config = {"project": {"name": "my_app", "version": "0.0.1"}}
+    project = Project(temp_dir, config=config)
+    project.set_app(app)
+    app.project = project
+    app.data_dir = temp_dir / "hatch-data"
+    app.cache_dir = temp_dir / "hatch-cache"
+
+    data_directory = temp_dir / "data"
+    environment = PreparedEnvironment(
+        temp_dir,
+        project.metadata,
+        "default",
+        project.config.envs["default"],
+        {},
+        data_directory,
+        data_directory,
+        platform,
+        0,
+        app,
+        **kwargs,
+    )
+    return project, environment
+
+
+class TestPrepareEnvironment:
+    def test_recovers_before_creating(self, temp_dir, platform, temp_application):
+        project, environment = _get_prepared_environment(temp_dir, platform, temp_application)
+
+        project.prepare_environment(environment, keep_env=False)
+
+        assert environment.recovered is True
+        assert environment.created is True
+        assert environment.synced is True
+        assert environment.existing is True
+
+    def test_existing_environment_is_reused(self, temp_dir, platform, temp_application):
+        project, environment = _get_prepared_environment(temp_dir, platform, temp_application)
+        environment.existing = True
+
+        project.prepare_environment(environment, keep_env=False)
+
+        assert environment.recovered is True
+        assert environment.created is False
+        assert environment.synced is True
+
+    def test_creation_failure_removes_environment(self, temp_dir, platform, temp_application):
+        project, environment = _get_prepared_environment(
+            temp_dir, platform, temp_application, fail_at="create"
+        )
+
+        with pytest.raises(RuntimeError, match="creation failed"):
+            project.prepare_environment(environment, keep_env=False)
+
+        assert environment.created is True
+        assert environment.removed is True
+        assert environment.synced is False
+
+    def test_creation_failure_with_keep_env(self, temp_dir, platform, temp_application):
+        project, environment = _get_prepared_environment(
+            temp_dir, platform, temp_application, fail_at="create"
+        )
+
+        with pytest.raises(RuntimeError, match="creation failed"):
+            project.prepare_environment(environment, keep_env=True)
+
+        assert environment.removed is False
+        assert environment.existing is True
+        assert environment.synced is False
+
+    def test_sync_failure_for_new_environment_removes_environment(
+        self, temp_dir, platform, temp_application
+    ):
+        project, environment = _get_prepared_environment(
+            temp_dir, platform, temp_application, fail_at="sync"
+        )
+
+        with pytest.raises(RuntimeError, match="sync failed"):
+            project.prepare_environment(environment, keep_env=False)
+
+        assert environment.created is True
+        assert environment.removed is True
+
+    def test_existing_environment_sync_failure_is_not_removed(self, temp_dir, platform, temp_application):
+        project, environment = _get_prepared_environment(
+            temp_dir, platform, temp_application, fail_at="sync"
+        )
+        environment.existing = True
+
+        with pytest.raises(RuntimeError, match="sync failed"):
+            project.prepare_environment(environment, keep_env=False)
+
+        assert environment.created is False
+        assert environment.removed is False
+        assert environment.existing is True

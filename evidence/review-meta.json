@@ -1,0 +1,5 @@
+{
+  "completion": "完成",
+  "fails": {},
+  "evidence": "src/hatch/venv/core.py 的 locked_file、creation_transaction、recover_interrupted 与 src/hatch/project/core.py 的 prepare_environment；相关测试 249 项通过，1 项受本机 Python 环境影响。"
+}

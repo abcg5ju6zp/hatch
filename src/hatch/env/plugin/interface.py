@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from functools import cached_property
 from os.path import isabs
 from typing import TYPE_CHECKING, Any
@@ -867,6 +867,32 @@ class EnvironmentInterface(ABC):
         from hatch.utils.dep import hash_dependencies
 
         return hash_dependencies(self.all_dependencies_complex)
+
+    def recover_incomplete(self) -> None:
+        """
+        Restore a consistent state if a previous process was terminated while creating the
+        environment, such as by removing incomplete data or by restoring the previously
+        available environment.
+        """
+
+    @contextmanager
+    def creation_transaction(self, *, keep_env: bool = False) -> Generator[bool, None, None]:
+        """
+        Wrap the creation of a new environment, including the initial dependency synchronization,
+        so that a failure does not leave the project with a broken environment. The yielded value
+        indicates whether creation should proceed and may be ``False`` when another process finished
+        creating the environment while an exclusive lock was held.
+
+        By default, the environment is removed if an error occurs, unless ``keep_env`` is true.
+        """
+        try:
+            yield True
+        except Exception:
+            if not keep_env and self.exists():
+                with suppress(Exception):
+                    self.remove()
+
+            raise
 
     @contextmanager
     def app_status_creation(self):

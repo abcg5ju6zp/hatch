@@ -179,58 +179,55 @@ class Project:
             self.app,
         )
 
-    @staticmethod
-    @contextmanager
-    def managed_environment(
-        environment: EnvironmentInterface, *, keep_env: bool = False
-    ) -> Generator[EnvironmentInterface, None, None]:
-        """Context manager that removes environment on error unless keep_env is True."""
-        try:
-            yield environment
-        except Exception:
-            if not keep_env and environment.exists():
-                environment.remove()
-            raise
-
     # Ensure that this method is clearly written since it is
     # used for documenting the life cycle of environments.
     def prepare_environment(self, environment: EnvironmentInterface, *, keep_env: bool):
+        # Clean up any environment whose creation was interrupted previously, such as by a process
+        # termination, before deciding whether a new one needs to be created
+        environment.recover_incomplete()
+
         if not environment.exists():
-            with self.managed_environment(environment, keep_env=keep_env):
-                self.env_metadata.reset(environment)
+            with environment.creation_transaction(keep_env=keep_env) as proceed:
+                if proceed:
+                    self.env_metadata.reset(environment)
 
-                with environment.app_status_creation():
-                    environment.create()
+                    with environment.app_status_creation():
+                        environment.create()
 
-                if not environment.skip_install:
-                    if environment.pre_install_commands:
-                        with environment.app_status_pre_installation():
-                            self.app.run_shell_commands(
-                                ExecutionContext(
-                                    environment,
-                                    shell_commands=environment.pre_install_commands,
-                                    source="pre-install",
-                                    show_code_on_error=True,
+                    if not environment.skip_install:
+                        if environment.pre_install_commands:
+                            with environment.app_status_pre_installation():
+                                self.app.run_shell_commands(
+                                    ExecutionContext(
+                                        environment,
+                                        shell_commands=environment.pre_install_commands,
+                                        source="pre-install",
+                                        show_code_on_error=True,
+                                    )
                                 )
-                            )
 
-                    with environment.app_status_project_installation():
-                        if environment.dev_mode:
-                            environment.install_project_dev_mode()
-                        else:
-                            environment.install_project()
+                        with environment.app_status_project_installation():
+                            if environment.dev_mode:
+                                environment.install_project_dev_mode()
+                            else:
+                                environment.install_project()
 
-                    if environment.post_install_commands:
-                        with environment.app_status_post_installation():
-                            self.app.run_shell_commands(
-                                ExecutionContext(
-                                    environment,
-                                    shell_commands=environment.post_install_commands,
-                                    source="post-install",
-                                    show_code_on_error=True,
+                        if environment.post_install_commands:
+                            with environment.app_status_post_installation():
+                                self.app.run_shell_commands(
+                                    ExecutionContext(
+                                        environment,
+                                        shell_commands=environment.post_install_commands,
+                                        source="post-install",
+                                        show_code_on_error=True,
+                                    )
                                 )
-                            )
 
+                self.synchronize_dependencies(environment)
+        else:
+            self.synchronize_dependencies(environment)
+
+    def synchronize_dependencies(self, environment: EnvironmentInterface) -> None:
         with environment.app_status_dependency_state_check():
             new_dep_hash = environment.dependency_hash()
 

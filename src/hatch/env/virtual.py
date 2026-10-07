@@ -162,6 +162,14 @@ class VirtualEnvironment(EnvironmentInterface):
     def find(self):
         return self.virtual_env_path
 
+    def recover_incomplete(self):
+        self.virtual_env.recover_interrupted()
+
+    @contextmanager
+    def creation_transaction(self, *, keep_env: bool = False):
+        with self.virtual_env.creation_transaction(keep_env=keep_env) as proceed:
+            yield proceed
+
     def create(self):
         if self.root in self.storage_path.parents:
             # Although it would be nice to support Mercurial, only Git supports multiple ignore files. See:

@@ -25,6 +25,7 @@ def create(app: Application, env_name: str):
     incompatible = {}
     for env in environments:
         environment = app.project.get_environment(env)
+        environment.recover_incomplete()
         if environment.exists():
             app.display_warning(f"Environment `{env}` already exists")
             continue
