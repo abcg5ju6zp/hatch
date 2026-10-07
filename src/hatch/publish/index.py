@@ -156,7 +156,35 @@ def recurse_artifacts(artifacts: list, root) -> Iterable[Path]:
         if artifact.is_file():
             yield artifact
         elif artifact.is_dir():
-            yield from artifact.iterdir()
+            # Only publish artifacts that belong to the committed version generation so that
+            # stale wheels/sdists left by failed version switches or retries are never uploaded
+            allowed = get_committed_artifacts(root, artifact)
+            for child in artifact.iterdir():
+                if allowed is not None and child.name not in allowed:
+                    continue
+
+                yield child
+
+
+def get_committed_artifacts(root: Path, directory: Path) -> set[str] | None:
+    """
+    Return the artifact filenames belonging to the committed generation, or `None` when the
+    directory cannot be filtered (no generation ledger, an in-progress switch, or unreadable data)
+    in which case the historical behavior of publishing everything is retained.
+    """
+    from hatchling.version.generation import GenerationStore
+
+    store = GenerationStore(str(root), str(directory))
+    try:
+        state = store.load()
+    except Exception:  # noqa: BLE001
+        return None
+
+    if state["committed"] is None or state["candidate"] is not None:
+        return None
+
+    artifacts = set(state["artifacts"])
+    return artifacts or None
 
 
 def parse_artifacts(artifact_payload):

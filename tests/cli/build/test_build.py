@@ -484,7 +484,7 @@ def test_clean(hatch, temp_dir, helpers, config_file):
     assert (path / "my_app" / "lib.so").is_file()
 
     artifacts = list(build_directory.iterdir())
-    assert len(artifacts) == 4
+    assert len(artifacts) == 2
 
     test_file = build_directory / "test.txt"
     test_file.touch()
@@ -541,7 +541,7 @@ def test_clean_env_var(hatch, temp_dir, helpers):
     assert build_directory.is_dir()
 
     artifacts = list(build_directory.iterdir())
-    assert len(artifacts) == 4
+    assert len(artifacts) == 2
 
     test_file = build_directory / "test.txt"
     test_file.touch()

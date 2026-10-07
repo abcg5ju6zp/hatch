@@ -1,0 +1,25 @@
+rubrics:
+  - id: 1
+    type: f2p
+    text: "版本来源、动态字段和插件配置完成解析校验前不改变当前项目版本。"
+  - id: 2
+    type: f2p
+    text: "ProjectMetadata、sdist、wheel 和 Publisher 只读取同一确认版本代际。"
+  - id: 3
+    type: f2p
+    text: "VCS、插件、配置或构建失败时旧版本元数据和已确认制品继续可用。"
+  - id: 4
+    type: f2p
+    text: "进程中止或重启后清理未确认候选，不发布旧新混合版本。"
+  - id: 5
+    type: f2p
+    text: "静态版本、动态字段、脏源码检查和缓存命中保持兼容。"
+  - id: 6
+    type: f2p
+    text: "同一版本重复构建不会制造新的错误制品或重复发布。"
+  - id: 7
+    type: p2p
+    text: "版本错误与发布认证错误可区分并能独立重试。"
+  - id: 8
+    type: p2p
+    text: "普通 metadata、build 和 publish 流程不回归。"

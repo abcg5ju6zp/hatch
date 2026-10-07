@@ -97,9 +97,6 @@ class BuilderInterface(ABC, Generic[BuilderConfigBound, PluginManagerBound]):
         clean_hooks_after: bool | None = None,
         clean_only: bool | None = False,
     ) -> Generator[str, None, None]:
-        # Fail early for invalid project metadata
-        self.metadata.validate_fields()
-
         if directory is None:
             directory = (
                 self.config.normalize_build_directory(os.environ[BuildEnvVars.LOCATION])
@@ -109,6 +106,17 @@ class BuilderInterface(ABC, Generic[BuilderConfigBound, PluginManagerBound]):
 
         if not os.path.isdir(directory):
             os.makedirs(directory)
+
+        # Resolve and validate the candidate generation (version, dynamic fields, plugin configuration)
+        # before metadata, builders, or publisher switch to it
+        from hatchling.version.generation import VersionCoordinator
+
+        coordinator = VersionCoordinator(self.metadata, directory)
+        coordinator.recover()
+        candidate = coordinator.begin()
+
+        # Fail early for invalid project metadata (also adopts the candidate generation)
+        self.metadata.validate_fields()
 
         version_api = self.get_version_api()
 
@@ -139,41 +147,58 @@ class BuilderInterface(ABC, Generic[BuilderConfigBound, PluginManagerBound]):
                 build_hook.clean(versions)
 
             if clean_only:
+                coordinator.discard()
                 return
 
         if clean_hooks_after is None:
             clean_hooks_after = env_var_enabled(BuildEnvVars.CLEAN_HOOKS_AFTER)
 
-        for version in versions:
-            self.app.display_debug(f"Building `{self.PLUGIN_NAME}` version `{version}`")
+        produced: list[str] = []
+        try:
+            for version in versions:
+                self.app.display_debug(f"Building `{self.PLUGIN_NAME}` version `{version}`")
 
-            build_data = self.get_default_build_data()
-            self.set_build_data_defaults(build_data)
+                build_data = self.get_default_build_data()
+                self.set_build_data_defaults(build_data)
 
-            # Allow inspection of configured build hooks and the order in which they run
-            build_data["build_hooks"] = tuple(configured_build_hooks)
+                # Allow inspection of configured build hooks and the order in which they run
+                build_data["build_hooks"] = tuple(configured_build_hooks)
 
-            # Execute all `initialize` build hooks
-            for build_hook in build_hooks:
-                build_hook.initialize(version, build_data)
-
-            if hooks_only:
-                self.app.display_debug(f"Only ran build hooks for `{self.PLUGIN_NAME}` version `{version}`")
-                continue
-
-            # Build the artifact
-            with self.config.set_build_data(build_data):
-                artifact = version_api[version](directory, **build_data)
-
-            # Execute all `finalize` build hooks
-            for build_hook in build_hooks:
-                build_hook.finalize(version, build_data, artifact)
-
-            if clean_hooks_after:
+                # Execute all `initialize` build hooks
                 for build_hook in build_hooks:
-                    build_hook.clean([version])
+                    build_hook.initialize(version, build_data)
 
-            yield artifact
+                if hooks_only:
+                    self.app.display_debug(f"Only ran build hooks for `{self.PLUGIN_NAME}` version `{version}`")
+                    continue
+
+                # Build the artifact
+                with self.config.set_build_data(build_data):
+                    artifact = version_api[version](directory, **build_data)
+
+                # Execute all `finalize` build hooks
+                for build_hook in build_hooks:
+                    build_hook.finalize(version, build_data, artifact)
+
+                if clean_hooks_after:
+                    for build_hook in build_hooks:
+                        build_hook.clean([version])
+
+                produced.append(artifact)
+
+                # Commit the generation immediately so metadata, the artifact, and persisted state
+                # agree even if the consumer stops iterating after this artifact (PEP 517 uses next())
+                coordinator.commit(candidate, produced)
+
+                yield artifact
+        except BaseException:
+            # Build aborted (including process interruption): roll back to the previous generation,
+            # purging candidate artifacts
+            coordinator.abort(candidate, produced)
+            raise
+        finally:
+            if hooks_only:
+                coordinator.discard()
 
     def recurse_included_files(self) -> Iterable[IncludedFile]:
         """

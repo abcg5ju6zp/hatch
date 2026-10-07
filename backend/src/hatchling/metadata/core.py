@@ -16,6 +16,7 @@ from hatchling.metadata.utils import (
 from hatchling.plugin.manager import PluginManagerBound
 from hatchling.utils.constants import DEFAULT_CONFIG_FILE
 from hatchling.utils.fs import locate_file
+from hatchling.version.generation import STATIC_SOURCE, VersionGeneration
 
 if TYPE_CHECKING:
     from packaging.requirements import Requirement
@@ -59,6 +60,9 @@ class ProjectMetadata(Generic[PluginManagerBound]):
         self._version: str | None = None
         self._original_version: str | None = None
         self._project_file: str | None = None
+
+        # A generation that has been resolved but not yet committed
+        self._pending_generation: VersionGeneration | None = None
 
         # App already loaded config
         if config is not None and root is not None:
@@ -255,28 +259,111 @@ class ProjectMetadata(Generic[PluginManagerBound]):
 
         return self._hatch
 
-    def _get_version(self, core_metadata: CoreMetadata | None = None) -> str:
+    def prepare_version(self, core_metadata: CoreMetadata | None = None) -> VersionGeneration:
+        """
+        Phase 1: parse and validate the candidate version, the dynamic fields, and the plugin
+        configuration without altering the committed state.
+        """
+        # Reuse a candidate already resolved so that later access (source resolution followed by
+        # the `version` property) cannot produce divergent versions from non-deterministic sources.
+        if self._pending_generation is not None:
+            generation = self._pending_generation
+            if core_metadata is not None:
+                self._flag_core(core_metadata, generation)
+
+            return generation
+
         if core_metadata is None:
             core_metadata = self.core
 
+        return self._resolve_generation(core_metadata)
+
+    def _resolve_generation(self, core_metadata: CoreMetadata) -> VersionGeneration:
         version = core_metadata.version
         if version is None:
-            version = self.hatch.version.cached
-            source = f"source `{self.hatch.version.source_name}`"
-            core_metadata._version_set = True  # noqa: SLF001
+            version_config = self.hatch.version
+
+            # Validate the plugin configuration before relying on it
+            source_name = version_config.source_name
+            scheme_name = version_config.scheme_name
+            _ = version_config.source
+            _ = version_config.scheme
+            version = version_config.cached
+            source_label = f"source `{source_name}`"
         else:
-            source = "field `project.version`"
+            source_name = STATIC_SOURCE
+            scheme_name = ""
+            source_label = "field `project.version`"
+
+        generation = self._make_generation(version, source_name, scheme_name, source_label)
+
+        if source_name != STATIC_SOURCE:
+            core_metadata._version_set = True  # noqa: SLF001
+
+        self._pending_generation = generation
+        return generation
+
+    @staticmethod
+    def _make_generation(
+        raw_version: Any, source_name: str, scheme_name: str, source_label: str
+    ) -> VersionGeneration:
+        if not isinstance(raw_version, str):
+            message = f"The version from {source_label} must be a string"
+            raise TypeError(message)
 
         from packaging.version import InvalidVersion, Version
 
         try:
-            normalized_version = str(Version(version))
+            normalized_version = str(Version(raw_version))
         except InvalidVersion:
-            message = f"Invalid version `{version}` from {source}, see https://peps.python.org/pep-0440/"
+            message = f"Invalid version `{raw_version}` from {source_label}, see https://peps.python.org/pep-0440/"
             raise ValueError(message) from None
+
+        return VersionGeneration(normalized_version, raw_version.strip(), source_name, scheme_name)
+
+    def commit_version(self, generation: VersionGeneration) -> None:
+        """
+        Phase 2: switch to a generation that has been successfully resolved and built.
+        """
+        self._install_generation(generation)
+
+    def restore_version(self, generation: VersionGeneration) -> None:
+        """
+        Adopt a previously committed generation (e.g. after a failed switch or a restart).
+        """
+        self._install_generation(generation)
+
+    def _install_generation(
+        self,
+        generation: VersionGeneration,
+        *,
+        core_metadata: CoreMetadata | None = None,
+    ) -> None:
+        self._version = generation.version
+        self._original_version = generation.original_version
+        self._pending_generation = None
+
+        target_core = core_metadata if core_metadata is not None else self._core
+        if target_core is None:
+            return
+
+        self._flag_core(target_core, generation)
+        with suppress(ValueError):
+            target_core.dynamic.remove("version")
+
+    @staticmethod
+    def _flag_core(core_metadata: CoreMetadata, generation: VersionGeneration) -> None:
+        if generation.source_name == STATIC_SOURCE:
+            core_metadata._version = generation.original_version  # noqa: SLF001
         else:
-            self._original_version = version.strip()
-            return normalized_version
+            core_metadata._version_set = True  # noqa: SLF001
+
+    def _get_version(self, core_metadata: CoreMetadata | None = None) -> str:
+        generation = self.prepare_version(core_metadata)
+
+        self._version = generation.version
+        self._original_version = generation.original_version
+        return generation.version
 
     def validate_fields(self) -> None:
         _ = self.version
