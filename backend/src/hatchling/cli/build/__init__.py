@@ -32,15 +32,16 @@ def build_impl(
     plugin_manager = PluginManager()
     metadata = ProjectMetadata(root, plugin_manager)
 
-    target_data: dict[str, Any] = {}
+    # One entry per `--target` argument: (raw value, target name, requested versions)
     if targets:
-        for data in targets:
-            target_name, _, version_data = data.partition(":")
-            versions = version_data.split(",") if version_data else []
-            target_data.setdefault(target_name, []).extend(versions)
+        target_specs = [_parse_target_spec(data) for data in targets]
     else:  # no cov
-        target_data["sdist"] = []
-        target_data["wheel"] = []
+        target_specs = [("sdist", "sdist", []), ("wheel", "wheel", [])]
+
+    # Grouped view preserving the historical de-duplication of target names
+    target_data: dict[str, list[str]] = {}
+    for _raw, target_name, versions in target_specs:
+        target_data.setdefault(target_name, []).extend(versions)
 
     builders = {}
     unknown_targets = []
@@ -60,24 +61,144 @@ def build_impl(
     if no_hooks:
         os.environ[BuildEnvVars.NO_HOOKS] = "true"
 
+    if show_dynamic_deps:
+        _show_dynamic_deps(app, builders, target_data, root, plugin_manager, metadata)
+        return
+
+    # The application coordinates the transaction when it drives builds one target at a time
+    if not (hooks_only or clean_only) and BuildEnvVars.GENERATION in os.environ:
+        _build_as_participant(
+            app,
+            builders,
+            target_specs,
+            root=root,
+            plugin_manager=plugin_manager,
+            metadata=metadata,
+            hooks_only=hooks_only,
+            clean=clean,
+            clean_hooks_after=clean_hooks_after,
+            clean_only=clean_only,
+        )
+        return
+
+    if hooks_only or clean_only:
+        _build_directly(
+            app,
+            builders,
+            target_data,
+            root=root,
+            plugin_manager=plugin_manager,
+            metadata=metadata,
+            directory=directory,
+            hooks_only=hooks_only,
+            clean=clean,
+            clean_hooks_after=clean_hooks_after,
+            clean_only=clean_only,
+        )
+        return
+
+    _build_transactional(
+        app,
+        builders,
+        target_specs,
+        root=root,
+        plugin_manager=plugin_manager,
+        metadata=metadata,
+        directory=directory,
+        clean=clean,
+        clean_hooks_after=clean_hooks_after,
+    )
+
+
+def _parse_target_spec(data: str) -> tuple[str, str, list[str]]:
+    target_name, _, version_data = data.partition(":")
+    versions = version_data.split(",") if version_data else []
+    return data, target_name, versions
+
+
+def _resolve_directory(builder, directory, root):
+    import os
+
+    from hatchling.builders.constants import BuildEnvVars
+
+    if directory:
+        return os.path.normpath(directory if os.path.isabs(directory) else os.path.join(root, directory))
+    if BuildEnvVars.LOCATION in os.environ:
+        return builder.config.normalize_build_directory(os.environ[BuildEnvVars.LOCATION])
+    return builder.config.directory
+
+
+def _display_artifact(app, artifact, root, display_directory=None):
+    import os
+
+    if display_directory is not None:
+        # The artifact still resides in the isolated directory at this point, so existence is
+        # checked against it while the displayed path is where it will end up after commit
+        if not os.path.isfile(artifact):
+            app.display_info(os.path.join(display_directory, os.path.basename(artifact)))
+            return
+
+        display_path = os.path.join(display_directory, os.path.basename(artifact))
+    else:
+        display_path = artifact
+        if not os.path.isfile(display_path):  # no cov
+            app.display_info(display_path)
+            return
+
+    if display_path == root or display_path.startswith(root + os.sep):
+        app.display_info(os.path.relpath(display_path, root))
+    else:
+        app.display_info(display_path)
+
+
+def _clean_rules(target_name, artifact_names):
+    if target_name == "sdist":
+        return {"suffixes": (".tar.gz",), "names": ()}
+    if target_name == "wheel":
+        return {"suffixes": (".whl",), "names": ()}
+    return {"suffixes": (), "names": tuple(artifact_names)}
+
+
+def _show_dynamic_deps(app, builders, target_data, root, plugin_manager, metadata):
     dynamic_dependencies: dict[str, None] = {}
+    for target_name in target_data:
+        builder = builders[target_name](
+            root, plugin_manager=plugin_manager, metadata=metadata, app=app.get_safe_application()
+        )
+        for dependency in builder.config.dynamic_dependencies:
+            dynamic_dependencies[dependency] = None
+
+    app.display(str(list(dynamic_dependencies)))
+
+
+def _build_directly(
+    app,
+    builders,
+    target_data,
+    *,
+    root,
+    plugin_manager,
+    metadata,
+    directory,
+    hooks_only,
+    clean,
+    clean_hooks_after,
+    clean_only,
+):
+    import os
+
     for i, (target_name, versions) in enumerate(target_data.items()):
         # Separate targets with a blank line
-        if not (clean_only or show_dynamic_deps) and i != 0:  # no cov
+        if not clean_only and i != 0:  # no cov
             app.display_info()
 
-        builder_class = builders[target_name]
-
         # Display name before instantiation in case of errors
-        if not (clean_only or show_dynamic_deps) and len(target_data) > 1:
+        if not clean_only and len(target_data) > 1:
             app.display_mini_header(target_name)
 
-        builder = builder_class(root, plugin_manager=plugin_manager, metadata=metadata, app=app.get_safe_application())
-        if show_dynamic_deps:
-            for dependency in builder.config.dynamic_dependencies:
-                dynamic_dependencies[dependency] = None
-
-            continue
+        builder = builders[target_name](
+            root, plugin_manager=plugin_manager, metadata=metadata, app=app.get_safe_application()
+        )
 
         for artifact in builder.build(
             directory=directory,
@@ -92,8 +213,149 @@ def build_impl(
             else:  # no cov
                 app.display_info(artifact)
 
-    if show_dynamic_deps:
-        app.display(str(list(dynamic_dependencies)))
+
+def _build_as_participant(
+    app,
+    builders,
+    target_specs,
+    *,
+    root,
+    plugin_manager,
+    metadata,
+    hooks_only,
+    clean,
+    clean_hooks_after,
+    clean_only,
+):
+    import os
+
+    from hatchling.builders import staging
+    from hatchling.builders.constants import BuildEnvVars
+
+    final_directory = os.environ[BuildEnvVars.FINAL_LOCATION]
+    generation = os.environ[BuildEnvVars.GENERATION]
+    isolated_directory = staging.artifacts_directory(final_directory, generation)
+
+    for index, (_raw, target_name, versions) in enumerate(target_specs):
+        # Separate targets with a blank line
+        if not clean_only and index != 0:  # no cov
+            app.display_info()
+
+        # Display name before instantiation in case of errors
+        if not clean_only and len(target_specs) > 1:
+            app.display_mini_header(target_name)
+
+        builder = builders[target_name](
+            root, plugin_manager=plugin_manager, metadata=metadata, app=app.get_safe_application()
+        )
+
+        produced = []
+        for artifact in builder.build(
+            directory=isolated_directory,
+            versions=versions,
+            hooks_only=hooks_only,
+            clean=clean,
+            clean_hooks_after=clean_hooks_after,
+            clean_only=clean_only,
+        ):
+            produced.append(artifact)
+            _display_artifact(app, artifact, root, display_directory=final_directory)
+
+        if produced and not hooks_only:
+            staging.write_build_record(
+                final_directory,
+                generation,
+                _raw,
+                project=builder.metadata.core.name,
+                version=builder.metadata.version,
+                artifact_paths=produced,
+            )
+
+
+def _build_transactional(
+    app,
+    builders,
+    target_specs,
+    *,
+    root,
+    plugin_manager,
+    metadata,
+    directory,
+    clean,
+    clean_hooks_after,
+):
+    import os
+
+    from hatchling.builders import staging
+
+    instances = {
+        target_name: builders[target_name](
+            root, plugin_manager=plugin_manager, metadata=metadata, app=app.get_safe_application()
+        )
+        for _raw, target_name, _versions in target_specs
+    }
+
+    # Group targets by the final directory they report so that, even when every target uses a
+    # custom directory, each directory is replaced as a single validated set
+    groups: dict[str, list[tuple[str, str, list[str]]]] = {}
+    for raw, target_name, versions in target_specs:
+        final_directory = _resolve_directory(instances[target_name], directory, root)
+        groups.setdefault(final_directory, []).append((raw, target_name, versions))
+
+    target_index = 0
+    for final_directory, specs in groups.items():
+        generation = staging.new_generation_id()
+        isolated_directory = staging.begin_generation(
+            final_directory,
+            generation=generation,
+            session=generation,
+            targets=[raw for raw, _name, _versions in specs],
+        )
+
+        try:
+            produced: dict[str, list[str]] = {}
+            for raw, target_name, versions in specs:
+                if target_index != 0:  # no cov
+                    app.display_info()
+                target_index += 1
+
+                if len(target_specs) > 1:
+                    app.display_mini_header(target_name)
+
+                builder = instances[target_name]
+                artifacts = list(
+                    builder.build(
+                        directory=isolated_directory,
+                        versions=versions,
+                        clean=clean,
+                        clean_hooks_after=clean_hooks_after,
+                    )
+                )
+                produced[raw] = artifacts
+
+                for artifact in artifacts:
+                    _display_artifact(app, artifact, root, display_directory=final_directory)
+
+                staging.write_build_record(
+                    final_directory,
+                    generation,
+                    raw,
+                    project=builder.metadata.core.name,
+                    version=builder.metadata.version,
+                    artifact_paths=artifacts,
+                )
+
+            clean_rules = {}
+            if clean:
+                for raw, target_name, _versions in specs:
+                    clean_rules[raw] = _clean_rules(
+                        target_name, [os.path.basename(path) for path in produced[raw]]
+                    )
+
+            staging.commit_generation(final_directory, generation, clean_rules=clean_rules)
+        except BaseException:
+            staging.abort_generation(final_directory, generation)
+            raise
 
 
 def build_command(subparsers: argparse._SubParsersAction, defaults: Any) -> None:

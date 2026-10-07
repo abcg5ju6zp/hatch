@@ -1232,7 +1232,7 @@ def test_debug_verbosity(hatch, temp_dir, helpers):
         Syncing dependencies
         Inspecting build dependencies
         ──────────────────────────────────── wheel ─────────────────────────────────────
-        cmd \[1\] \| python -u -m hatchling build --target wheel:standard
+        cmd \[1\] \| python -u -m hatchling build --target wheel:standard --directory .+
         Building `wheel` version `standard`
         {re.escape(str(wheel_path.relative_to(path)))}
         """,
@@ -1564,3 +1564,126 @@ workspace.members = ["packages/*"]
             "workspace_root-0.0.1.tar.gz",
         ]
         assert not (workspace_root / "dist").is_dir()
+
+
+@pytest.mark.requires_internet
+def test_failed_build_keeps_previous_set(hatch, temp_dir, helpers):
+    project_name = "My.App"
+
+    with temp_dir.as_cwd():
+        result = hatch("new", project_name)
+        assert result.exit_code == 0, result.output
+
+    path = temp_dir / "my-app"
+
+    with path.as_cwd():
+        result = hatch("build")
+        assert result.exit_code == 0, result.output
+
+    build_directory = path / "dist"
+    old_sdist = build_directory / "my_app-0.0.1.tar.gz"
+    old_wheel = build_directory / "my_app-0.0.1-py3-none-any.whl"
+    assert old_sdist.is_file()
+    assert old_wheel.is_file()
+
+    # A signing/finalization hook fails for the new release
+    build_script = path / DEFAULT_BUILD_SCRIPT
+    build_script.write_text(
+        helpers.dedent(
+            """
+            from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+            class CustomHook(BuildHookInterface):
+                def finalize(self, version, build_data, artifact):
+                    if self.target_name == 'wheel':
+                        raise SystemExit(1)
+            """
+        )
+    )
+
+    project = Project(path)
+    config = dict(project.raw_config)
+    config["tool"]["hatch"]["build"] = {"hooks": {"custom": {"path": build_script.name}}}
+    project.save_config(config)
+
+    with path.as_cwd():
+        result = hatch("version", "9000")
+        assert result.exit_code == 0, result.output
+
+        result = hatch("build")
+
+    assert result.exit_code == 1
+
+    # The old, complete set is untouched and no partial new set leaked into the directory
+    assert old_sdist.is_file()
+    assert old_wheel.is_file()
+    assert not (build_directory / "my_app-9000.tar.gz").exists()
+    assert not (build_directory / "my_app-9000-py3-none-any.whl").exists()
+    assert sorted(p.name for p in build_directory.iterdir()) == [
+        "my_app-0.0.1-py3-none-any.whl",
+        "my_app-0.0.1.tar.gz",
+    ]
+
+    # The unpublished, isolated directory was reclaimed
+    assert not (path / ".dist.hatch" / "staging").exists()
+
+
+@pytest.mark.requires_internet
+def test_successful_build_confirms_generation(hatch, temp_dir):
+    import json
+
+    project_name = "My.App"
+
+    with temp_dir.as_cwd():
+        result = hatch("new", project_name)
+        assert result.exit_code == 0, result.output
+
+    path = temp_dir / "my-app"
+
+    with path.as_cwd():
+        result = hatch("build", "-t", "wheel")
+        assert result.exit_code == 0, result.output
+
+    state_directory = path / ".dist.hatch" / "generations"
+    manifests = [state_directory / name for name in sorted(p.name for p in state_directory.iterdir())]
+    assert len(manifests) == 1
+
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["version"] == "0.0.1"
+    assert manifest["targets"] == ["wheel"]
+    assert [artifact["name"] for artifact in manifest["artifacts"]] == [
+        "my_app-0.0.1-py3-none-any.whl"
+    ]
+    artifact = manifest["artifacts"][0]
+    assert artifact["sha256"]
+    assert artifact["size"] > 0
+
+    # Only the single requested target is present
+    assert sorted(p.name for p in (path / "dist").iterdir()) == ["my_app-0.0.1-py3-none-any.whl"]
+
+
+@pytest.mark.requires_internet
+def test_aborted_staging_directory_cleaned_on_restart(hatch, temp_dir):
+    project_name = "My.App"
+
+    with temp_dir.as_cwd():
+        result = hatch("new", project_name)
+        assert result.exit_code == 0, result.output
+
+    path = temp_dir / "my-app"
+
+    with path.as_cwd():
+        result = hatch("build")
+        assert result.exit_code == 0, result.output
+
+    # Simulate a process killed mid-build
+    dead_directory = path / ".dist.hatch" / "staging" / "dead-generation" / "artifacts"
+    dead_directory.mkdir(parents=True)
+    (dead_directory / "partial.tar.gz").touch()
+
+    with path.as_cwd():
+        result = hatch("build")
+        assert result.exit_code == 0, result.output
+
+    assert not (path / ".dist.hatch" / "staging" / "dead-generation").exists()
+    assert not (path / ".dist.hatch" / "staging").exists()

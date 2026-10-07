@@ -1,0 +1,11 @@
+{
+  "completion": "部分完成",
+  "fails": {
+    "1": "commit_generation 在最终目录上逐个 os.replace 文件，并在清理规则下先删除旧文件；进程在文件替换中止时最终目录已经混合两代或缺少旧文件。",
+    "2": "产物集合没有目录级提交点，hook、压缩和签名成功后的多文件替换仍逐文件执行。",
+    "3": "构建失败前虽然候选目录会删除，但提交阶段任一文件失败会在旧集合已被部分移动后暴露混合目录，旧完整集合不能由 staging 恢复。",
+    "4": "恢复只清理 pending 目录，没有按 generation 清理或恢复最终目录；中止后的最终目录可保留部分新制品。",
+    "5": "Publisher 读取 confirmed manifest 的文件名集合，但逐文件提交失败时 manifest 不会记录最终目录已经混合，发布路径可消费同一清单之外的残留文件。"
+  },
+  "evidence": "backend/src/hatchling/builders/staging.py 的 commit_generation、validate_generation、cleanup_pending；staging 与 publish generation 测试 31 项通过。"
+}

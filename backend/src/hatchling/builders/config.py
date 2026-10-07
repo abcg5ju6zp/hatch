@@ -107,12 +107,27 @@ class BuilderConfig:
         if name in EXCLUDED_DIRECTORIES:
             return True
 
+        # Never distribute the atomic build bookkeeping directory that sits next to the
+        # configured build directory (e.g. `dist/` and `.dist.hatch/`)
+        if self.__path_is_build_state(name, relative_path):
+            return True
+
         relative_directory = os.path.join(relative_path, name)
         return (
             self.path_is_reserved(relative_directory)
             # The trailing slash is necessary so e.g. `bar/` matches `foo/bar`
             or (self.skip_excluded_dirs and self.path_is_excluded(f"{relative_directory}/"))
         )
+
+    def __path_is_build_state(self, name: str, relative_path: str) -> bool:
+        from hatchling.builders.staging import bookkeeping_directory
+
+        state_directory = os.path.normpath(bookkeeping_directory(self.directory))
+        candidate = os.path.normpath(os.path.join(self.root, relative_path, name))
+        try:
+            return os.path.commonpath((state_directory, candidate)) == state_directory
+        except ValueError:
+            return False
 
     @cached_property
     def include_spec(self) -> pathspec.GitIgnoreSpec | None:
@@ -813,7 +828,7 @@ class BuilderConfig:
         return []
 
     def default_global_exclude(self) -> list[str]:  # noqa: PLR6301
-        patterns = ["*.py[cdo]", f"/{DEFAULT_BUILD_DIRECTORY}"]
+        patterns = ["*.py[cdo]", f"/{DEFAULT_BUILD_DIRECTORY}", f"/.{DEFAULT_BUILD_DIRECTORY}.hatch/"]
         patterns.sort()
         return patterns
 

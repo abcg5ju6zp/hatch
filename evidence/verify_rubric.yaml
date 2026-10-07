@@ -1,0 +1,25 @@
+rubrics:
+  - id: 1
+    type: f2p
+    text: "所有目标制品、metadata 和哈希在隔离目录完整生成并校验前不改变 dist。"
+  - id: 2
+    type: f2p
+    text: "hook、压缩和签名全部成功后才一次替换产物集合。"
+  - id: 3
+    type: f2p
+    text: "任一构建失败时旧的完整集合继续可读，候选文件不会被 Publisher 消费。"
+  - id: 4
+    type: f2p
+    text: "进程中止或重启后未发布目录可确定清理或完成，不混合两代制品。"
+  - id: 5
+    type: f2p
+    text: "Publisher 只读取同一确认代际，不重复上传相同确认结果。"
+  - id: 6
+    type: f2p
+    text: "不同 builder 插件、单目标构建和版本来源保持兼容。"
+  - id: 7
+    type: p2p
+    text: "metadata、hash 和文件名在成功发布后彼此一致。"
+  - id: 8
+    type: p2p
+    text: "普通 build、publish 和清理命令不回归。"

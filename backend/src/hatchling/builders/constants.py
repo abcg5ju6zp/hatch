@@ -40,6 +40,11 @@ class BuildEnvVars:
     HOOK_ENABLE_PREFIX = "HATCH_BUILD_HOOK_ENABLE_"
     CLEAN = "HATCH_BUILD_CLEAN"
     CLEAN_HOOKS_AFTER = "HATCH_BUILD_CLEAN_HOOKS_AFTER"
+    # Set by the application when it coordinates an isolated, multi-target build. The
+    # hatchling process then acts as a transaction participant rather than owning one.
+    SESSION = "HATCH_BUILD_SESSION"
+    GENERATION = "HATCH_BUILD_GENERATION"
+    FINAL_LOCATION = "HATCH_BUILD_FINAL_LOCATION"
 
 
 EDITABLES_REQUIREMENT = "editables~=0.3"

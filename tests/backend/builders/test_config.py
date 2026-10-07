@@ -1610,7 +1610,7 @@ class TestFileSelectionDefaults:
     def test_global_exclude(self, isolation):
         builder = MockBuilder(str(isolation))
 
-        assert builder.config.default_global_exclude() == ["*.py[cdo]", "/dist"]
+        assert builder.config.default_global_exclude() == ["*.py[cdo]", "/.dist.hatch/", "/dist"]
 
 
 class TestPatternInclude:
