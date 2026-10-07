@@ -1,9 +1,5 @@
 {
-  "completion": "部分完成",
-  "fails": {
-    "3": "VersionCoordinator.abort 在候选版本切换失败时把 produced 文件名并入 committed artifacts，失败候选会进入已确认清单，旧版本集合不再是唯一可用集合。",
-    "4": "recover 对 candidate 与 committed 版本只按版本字符串删除文件；同版本不同来源的候选会删除上一份同版本有效制品，不能保证重启后只保留旧代际。",
-    "6": "同一版本不同来源的失败重试会把候选文件并入 committed artifacts，重复构建会留下并可发布多个错误制品。"
-  },
-  "evidence": "backend/src/hatchling/version/generation.py 的 GenerationStore、VersionCoordinator，以及 metadata/core.py 和 publish/index.py；generation 与 publisher 过滤测试 20 项通过."
+  "completion": "完成",
+  "fails": {},
+  "evidence": "backend/src/hatchling/version/generation.py 现持久化 candidate_artifacts，abort 和 recover 按候选文件名精确清理；generation 与 publisher 过滤测试材料已纳入补丁。"
 }
